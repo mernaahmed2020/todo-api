@@ -1,8 +1,7 @@
-package main
+package db
 
 import (
 	"database/sql"
-	"fmt"
 	"log"
 
 	_ "github.com/lib/pq"
@@ -16,13 +15,17 @@ func InitDB() {
 	var err error
 	DB, err = sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatal("Error connecting to DB:", err)
+		log.Fatal("Error opening DB connection:", err)
 	}
 
 	err = DB.Ping()
 	if err != nil {
-		log.Fatal("Database unreachable:", err)
+		log.Fatal("Database not reachable:", err)
 	}
 
-	fmt.Println("Connected to Postgres!")
+	log.Println("✅ Connected to PostgreSQL successfully!")
+}
+
+func GetDB() *sql.DB {
+	return DB
 }
