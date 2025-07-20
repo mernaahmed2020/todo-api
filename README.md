@@ -10,17 +10,18 @@ git clone https://github.com/mernaahmed2020/todo-api.git
 cd todo-api
 
 ### 2. Run PostgreSQL using Docker (Windows PowerShell)
-(i know this is not best practice at all to put secrets in a readme,sorry:)
+## (i know this is not best practice at all to put secrets in a readme,sorry:)
 
 docker run --name todo-postgres `
   -e POSTGRES_PASSWORD=secret123 `
   -e POSTGRES_DB=todo_app `
   -p 5432:5432 `
   -d postgres
-###3.Update the database connection string in db/db.go if needed:
+### 3. Update the database connection string in db/db.go if needed:
+
  connStr := "postgres://postgres:yourpassword@localhost:5432/todo_app?sslmode=disable"
 
- 4.run application
+### 4. run application
  go run .
 
 
