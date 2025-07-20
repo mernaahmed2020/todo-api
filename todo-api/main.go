@@ -1,78 +1,95 @@
 package main
 
 import (
+	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
 
-type Todo struct {
-	ID        int    `json:"id"`
-	Title     string `json:"title"`
-	Completed bool   `json:"completed"`
-}
-
-var todos = []Todo{}
-var nextID = 1
-
 func main() {
+	InitDB()
 	router := gin.Default()
 
 	router.GET("/todos", func(c *gin.Context) {
-		c.JSON(200, todos)
+		rows, err := DB.Query("SELECT id, title, completed FROM todos")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not fetch todos"})
+			return
+		}
+		defer rows.Close()
+
+		var todos []Todo
+		for rows.Next() {
+			var t Todo
+			err := rows.Scan(&t.ID, &t.Title, &t.Completed)
+			if err != nil {
+				continue
+			}
+			todos = append(todos, t)
+		}
+		c.JSON(http.StatusOK, todos)
 	})
 
 	router.GET("/todos/:id", func(c *gin.Context) {
-		id, _ := strconv.Atoi(c.Param("id"))
-		for _, todo := range todos {
-			if todo.ID == id {
-				c.JSON(200, todo)
-				return
-			}
+		id := c.Param("id")
+		var t Todo
+		err := DB.QueryRow("SELECT id, title, completed FROM todos WHERE id = $1", id).Scan(&t.ID, &t.Title, &t.Completed)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+			return
 		}
-		c.JSON(404, gin.H{"error": "didn't find todo"})
+		c.JSON(http.StatusOK, t)
 	})
 
 	router.POST("/todos", func(c *gin.Context) {
-		var todo Todo
-		if err := c.BindJSON(&todo); err != nil || todo.Title == "" {
-			c.JSON(400, gin.H{"error": "wrong or empty title"})
+		var t Todo
+		if err := c.BindJSON(&t); err != nil || t.Title == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 			return
 		}
-		todo.ID = nextID
-		nextID++
-		todos = append(todos, todo)
-		c.JSON(200, todo)
+		err := DB.QueryRow("INSERT INTO todos (title, completed) VALUES ($1, $2) RETURNING id", t.Title, t.Completed).Scan(&t.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not create todo"})
+			return
+		}
+		c.JSON(http.StatusOK, t)
 	})
 
 	router.PUT("/todos/:id", func(c *gin.Context) {
-		id, _ := strconv.Atoi(c.Param("id"))
-		var data Todo
-		if err := c.BindJSON(&data); err != nil || data.Title == "" {
-			c.JSON(400, gin.H{"error": "wrong or empty title"})
+		id := c.Param("id")
+		var t Todo
+		if err := c.BindJSON(&t); err != nil || t.Title == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 			return
 		}
-		for i := range todos {
-			if todos[i].ID == id {
-				todos[i].Title = data.Title
-				todos[i].Completed = data.Completed
-				c.JSON(200, todos[i])
-				return
-			}
+		result, err := DB.Exec("UPDATE todos SET title = $1, completed = $2 WHERE id = $3", t.Title, t.Completed, id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not update todo"})
+			return
 		}
-		c.JSON(404, gin.H{"error": "Todo not found"})
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+			return
+		}
+		t.ID, _ = strconv.Atoi(id)
+		c.JSON(http.StatusOK, t)
 	})
 
 	router.DELETE("/todos/:id", func(c *gin.Context) {
-		id, _ := strconv.Atoi(c.Param("id"))
-		for i := range todos {
-			if todos[i].ID == id {
-				todos = append(todos[:i], todos[i+1:]...)
-				c.JSON(200, gin.H{"message": "deleted todo successfully"})
-				return
-			}
+		id := c.Param("id")
+		result, err := DB.Exec("DELETE FROM todos WHERE id = $1", id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not delete todo"})
+			return
 		}
-		c.JSON(404, gin.H{"error": "Todo not found"})
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "Todo deleted"})
 	})
 
 	router.Run(":8080")
