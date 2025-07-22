@@ -1,13 +1,9 @@
 package handlers
 
 import (
-	"database/sql"
-	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
-
 	"todo-api/db"
 	"todo-api/models"
 
@@ -30,102 +26,60 @@ func RegisterRoutes(r *gin.Engine) {
 }
 
 func GetAllTodos(c *gin.Context) {
-	rows, err := db.GetDB().Query("SELECT id, title, completed, category, priority, completedAt, dueDate FROM todos")
-	if err != nil {
+	var todos []models.Todo
+	if err := db.GetDB().Find(&todos).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not fetch todos"})
 		return
-	}
-	defer rows.Close()
-
-	var todos []models.Todo
-	for rows.Next() {
-		var t models.Todo
-		err := rows.Scan(&t.ID, &t.Title, &t.Completed, &t.Category, &t.Priority, &t.CompletedAt, &t.DueDate)
-		if err != nil {
-			continue
-		}
-		todos = append(todos, t)
 	}
 	c.JSON(http.StatusOK, todos)
 }
 
 func GetTodoByID(c *gin.Context) {
 	id := c.Param("id")
-	var t models.Todo
-	err := db.GetDB().QueryRow("SELECT id, title, completed, category, priority, completedAt, dueDate FROM todos WHERE id = $1", id).
-		Scan(&t.ID, &t.Title, &t.Completed, &t.Category, &t.Priority, &t.CompletedAt, &t.DueDate)
-	if err == sql.ErrNoRows {
+	var todo models.Todo
+	if err := db.GetDB().First(&todo, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
 		return
-	} else if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Query error"})
-		return
 	}
-	c.JSON(http.StatusOK, t)
+	c.JSON(http.StatusOK, todo)
 }
 
 func GetTodosByCategory(c *gin.Context) {
 	category := c.Param("category")
-	rows, err := db.GetDB().Query("SELECT id, title, completed, category, priority, completedAt, dueDate FROM todos WHERE category = $1", category)
-	if err != nil {
+	var todos []models.Todo
+	if err := db.GetDB().Where("category = ?", category).Find(&todos).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not fetch todos"})
 		return
-	}
-	defer rows.Close()
-
-	var todos []models.Todo
-	for rows.Next() {
-		var t models.Todo
-		if err := rows.Scan(&t.ID, &t.Title, &t.Completed, &t.Category, &t.Priority, &t.CompletedAt, &t.DueDate); err == nil {
-			todos = append(todos, t)
-		}
 	}
 	c.JSON(http.StatusOK, todos)
 }
 
 func GetTodosByStatus(c *gin.Context) {
 	status := c.Param("status")
-	completed := false
+	var completed bool
 	if status == "true" {
 		completed = true
-	} else if status != "false" {
+	} else if status == "false" {
+		completed = false
+	} else {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status value (must be true or false)"})
 		return
 	}
 
-	rows, err := db.GetDB().Query("SELECT id, title, completed, category, priority, completedAt, dueDate FROM todos WHERE completed = $1", completed)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Query error"})
-		return
-	}
-	defer rows.Close()
-
 	var todos []models.Todo
-	for rows.Next() {
-		var t models.Todo
-		if err := rows.Scan(&t.ID, &t.Title, &t.Completed, &t.Category, &t.Priority, &t.CompletedAt, &t.DueDate); err == nil {
-			todos = append(todos, t)
-		}
+	if err := db.GetDB().Where("completed = ?", completed).Find(&todos).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not fetch todos"})
+		return
 	}
 	c.JSON(http.StatusOK, todos)
 }
 
 func SearchTodosByTitle(c *gin.Context) {
 	q := c.Query("q")
-	like := "%%%s%%"
-	rows, err := db.GetDB().Query("SELECT id, title, completed, category, priority, completedAt, dueDate FROM todos WHERE LOWER(title) LIKE LOWER($1)", fmt.Sprintf(like, q))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Query error"})
-		return
-	}
-	defer rows.Close()
-
 	var todos []models.Todo
-	for rows.Next() {
-		var t models.Todo
-		if err := rows.Scan(&t.ID, &t.Title, &t.Completed, &t.Category, &t.Priority, &t.CompletedAt, &t.DueDate); err == nil {
-			todos = append(todos, t)
-		}
+	if err := db.GetDB().Where("LOWER(title) LIKE LOWER(?)", "%"+q+"%").Find(&todos).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Search failed"})
+		return
 	}
 	c.JSON(http.StatusOK, todos)
 }
@@ -136,6 +90,7 @@ func CreateTodo(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
+
 	t.Title = strings.TrimSpace(t.Title)
 	if t.Title == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Title cannot be empty"})
@@ -160,9 +115,7 @@ func CreateTodo(c *gin.Context) {
 		t.CompletedAt = nil
 	}
 
-	err := db.GetDB().QueryRow(`INSERT INTO todos (title, completed, category, priority, completedAt, dueDate) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-		t.Title, t.Completed, t.Category, t.Priority, t.CompletedAt, t.DueDate).Scan(&t.ID)
-	if err != nil {
+	if err := db.GetDB().Create(&t).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not create todo"})
 		return
 	}
@@ -177,6 +130,12 @@ func UpdateTodoByID(c *gin.Context) {
 		return
 	}
 
+	var existing models.Todo
+	if err := db.GetDB().First(&existing, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
+		return
+	}
+
 	now := time.Now().UTC()
 	if t.Completed {
 		t.CompletedAt = &now
@@ -184,18 +143,20 @@ func UpdateTodoByID(c *gin.Context) {
 		t.CompletedAt = nil
 	}
 
-	result, err := db.GetDB().Exec(`UPDATE todos SET title = $1, completed = $2, category = $3, priority = $4, completedAt = $5, dueDate = $6 WHERE id = $7`,
-		t.Title, t.Completed, t.Category, t.Priority, t.CompletedAt, t.DueDate, id)
-	if err != nil {
+	// Update fields manually to avoid overwriting ID
+	existing.Title = t.Title
+	existing.Completed = t.Completed
+	existing.Category = t.Category
+	existing.Priority = t.Priority
+	existing.CompletedAt = t.CompletedAt
+	existing.DueDate = t.DueDate
+
+	if err := db.GetDB().Save(&existing).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not update todo"})
 		return
 	}
-	if rows, _ := result.RowsAffected(); rows == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
-		return
-	}
-	t.ID = parseInt(id)
-	c.JSON(http.StatusOK, t)
+
+	c.JSON(http.StatusOK, existing)
 }
 
 func BulkUpdateByCategory(c *gin.Context) {
@@ -214,10 +175,10 @@ func BulkUpdateByCategory(c *gin.Context) {
 		completedAt = &now
 	}
 
-	_, err := db.GetDB().Exec(`UPDATE todos SET completed = $1, completedAt = $2 WHERE category = $3`,
-		body.Completed, completedAt, category)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not bulk update"})
+	if err := db.GetDB().Model(&models.Todo{}).
+		Where("category = ?", category).
+		Updates(map[string]interface{}{"completed": body.Completed, "completed_at": completedAt}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Bulk update failed"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Todos updated"})
@@ -225,28 +186,17 @@ func BulkUpdateByCategory(c *gin.Context) {
 
 func DeleteTodoByID(c *gin.Context) {
 	id := c.Param("id")
-	result, err := db.GetDB().Exec("DELETE FROM todos WHERE id = $1", id)
-	if err != nil {
+	if err := db.GetDB().Delete(&models.Todo{}, id).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Delete failed"})
-		return
-	}
-	if rows, _ := result.RowsAffected(); rows == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Todo deleted"})
 }
 
 func DeleteAllTodos(c *gin.Context) {
-	_, err := db.GetDB().Exec("DELETE FROM todos")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not delete all todos"})
+	if err := db.GetDB().Where("1 = 1").Delete(&models.Todo{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Delete all failed"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "All todos deleted"})
-}
-
-func parseInt(s string) int {
-	val, _ := strconv.Atoi(s)
-	return val
 }
