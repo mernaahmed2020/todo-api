@@ -145,3 +145,29 @@ func TestDeleteAllTodos(t *testing.T) {
 
 	assert.True(t, resp.Code == http.StatusOK || resp.Code == http.StatusInternalServerError)
 }
+
+func TestCreateTodoWithInvalidTags(t *testing.T) {
+	router := setupRouter()
+	todo := map[string]interface{}{
+		"title":    "Invalid Tags",
+		"category": "test",
+		"priority": "Medium",
+		"tags":     []string{"", "a-very-long-tag-that-exceeds-fifty-characters-xxxxxxxxxxxxxxxxxxxxx", "urgent", "urgent"},
+	}
+	body, _ := json.Marshal(todo)
+
+	req, _ := http.NewRequest("POST", "/todos", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	assert.Equal(t, http.StatusBadRequest, resp.Code)
+}
+func TestGetSortedTodos(t *testing.T) {
+	router := setupRouter()
+	req, _ := http.NewRequest("GET", "/todos/sorted", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	assert.True(t, resp.Code == http.StatusOK || resp.Code == http.StatusInternalServerError)
+}

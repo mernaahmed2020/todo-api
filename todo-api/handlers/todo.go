@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 	"todo-api/db"
@@ -23,11 +24,12 @@ func RegisterRoutes(r *gin.Engine) {
 
 	r.DELETE("/todos/:id", DeleteTodoByID)
 	r.DELETE("/todos", DeleteAllTodos)
+	r.GET("/todos/sorted", GetSortedTodos)
 }
 
 func GetAllTodos(c *gin.Context) {
 	var todos []models.Todo
-	if err := db.GetDB().Find(&todos).Error; err != nil {
+	if err := db.GetDB().Preload("Tags").Find(&todos).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not fetch todos"})
 		return
 	}
@@ -37,7 +39,7 @@ func GetAllTodos(c *gin.Context) {
 func GetTodoByID(c *gin.Context) {
 	id := c.Param("id")
 	var todo models.Todo
-	if err := db.GetDB().First(&todo, id).Error; err != nil {
+	if err := db.GetDB().Preload("Tags").First(&todo, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
 		return
 	}
@@ -47,7 +49,7 @@ func GetTodoByID(c *gin.Context) {
 func GetTodosByCategory(c *gin.Context) {
 	category := c.Param("category")
 	var todos []models.Todo
-	if err := db.GetDB().Where("category = ?", category).Find(&todos).Error; err != nil {
+	if err := db.GetDB().Preload("Tags").Where("category = ?", category).Find(&todos).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not fetch todos"})
 		return
 	}
@@ -67,7 +69,7 @@ func GetTodosByStatus(c *gin.Context) {
 	}
 
 	var todos []models.Todo
-	if err := db.GetDB().Where("completed = ?", completed).Find(&todos).Error; err != nil {
+	if err := db.GetDB().Preload("Tags").Where("completed = ?", completed).Find(&todos).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not fetch todos"})
 		return
 	}
@@ -77,7 +79,7 @@ func GetTodosByStatus(c *gin.Context) {
 func SearchTodosByTitle(c *gin.Context) {
 	q := c.Query("q")
 	var todos []models.Todo
-	if err := db.GetDB().Where("LOWER(title) LIKE LOWER(?)", "%"+q+"%").Find(&todos).Error; err != nil {
+	if err := db.GetDB().Preload("Tags").Where("LOWER(title) LIKE LOWER(?)", "%"+q+"%").Find(&todos).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Search failed"})
 		return
 	}
@@ -85,77 +87,181 @@ func SearchTodosByTitle(c *gin.Context) {
 }
 
 func CreateTodo(c *gin.Context) {
-	var t models.Todo
-	if err := c.BindJSON(&t); err != nil {
+	var input struct {
+		Title     string     `json:"title"`
+		Completed bool       `json:"completed"`
+		Category  string     `json:"category"`
+		Priority  string     `json:"priority"`
+		DueDate   *time.Time `json:"dueDate"`
+		Tags      []string   `json:"tags"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
 
-	t.Title = strings.TrimSpace(t.Title)
-	if t.Title == "" {
+	input.Title = strings.TrimSpace(input.Title)
+	if input.Title == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Title cannot be empty"})
 		return
 	}
 
 	validPriorities := map[string]bool{"Low": true, "Medium": true, "High": true}
-	if !validPriorities[t.Priority] {
+	if !validPriorities[input.Priority] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Priority must be Low, Medium, or High"})
 		return
 	}
 
 	now := time.Now().UTC()
-	if t.DueDate != nil && t.DueDate.Before(now) {
+	if input.DueDate != nil && input.DueDate.Before(now) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Due date cannot be in the past"})
 		return
 	}
 
-	if t.Completed {
-		t.CompletedAt = &now
-	} else {
-		t.CompletedAt = nil
+	tagMap := map[string]bool{}
+	var tagModels []*models.Tag
+
+	for _, tag := range input.Tags {
+		tag = strings.TrimSpace(tag)
+
+		if tag == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tags must not be empty"})
+			return
+		}
+		if len(tag) > 50 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tag cannot exceed 50 characters"})
+			return
+		}
+		if tagMap[tag] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Duplicate tags are not allowed"})
+			return
+		}
+		tagMap[tag] = true
+
+		var tagModel models.Tag
+		if err := db.GetDB().FirstOrCreate(&tagModel, models.Tag{Tag: tag}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process tag: " + tag})
+			return
+		}
+		tagModels = append(tagModels, &tagModel)
 	}
 
-	if err := db.GetDB().Create(&t).Error; err != nil {
+	todo := models.Todo{
+		Title:     input.Title,
+		Completed: input.Completed,
+		Category:  input.Category,
+		Priority:  input.Priority,
+		DueDate:   input.DueDate,
+		Tags:      tagModels,
+	}
+
+	if input.Completed {
+		todo.CompletedAt = &now
+	}
+
+	if err := db.GetDB().Create(&todo).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not create todo"})
 		return
 	}
-	c.JSON(http.StatusOK, t)
+
+	c.JSON(http.StatusOK, todo)
 }
 
 func UpdateTodoByID(c *gin.Context) {
 	id := c.Param("id")
-	var t models.Todo
-	if err := c.BindJSON(&t); err != nil || strings.TrimSpace(t.Title) == "" {
+
+	// Define a separate input struct to cleanly accept JSON
+	var input struct {
+		Title     string     `json:"title"`
+		Completed bool       `json:"completed"`
+		Category  string     `json:"category"`
+		Priority  string     `json:"priority"`
+		DueDate   *time.Time `json:"dueDate"`
+		Tags      []string   `json:"tags"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil || strings.TrimSpace(input.Title) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 		return
 	}
 
+	// Step 1: Fetch the existing todo
 	var existing models.Todo
-	if err := db.GetDB().First(&existing, id).Error; err != nil {
+	if err := db.GetDB().Preload("Tags").First(&existing, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Todo not found"})
 		return
 	}
 
-	now := time.Now().UTC()
-	if t.Completed {
-		t.CompletedAt = &now
-	} else {
-		t.CompletedAt = nil
+	// Step 2: Validate priority
+	validPriorities := map[string]bool{"Low": true, "Medium": true, "High": true}
+	if !validPriorities[input.Priority] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Priority must be Low, Medium, or High"})
+		return
 	}
 
-	// Update fields manually to avoid overwriting ID
-	existing.Title = t.Title
-	existing.Completed = t.Completed
-	existing.Category = t.Category
-	existing.Priority = t.Priority
-	existing.CompletedAt = t.CompletedAt
-	existing.DueDate = t.DueDate
+	// Step 3: Validate due date
+	now := time.Now().UTC()
+	if input.DueDate != nil && input.DueDate.Before(now) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Due date cannot be in the past"})
+		return
+	}
 
+	// Step 4: Handle tags validation and association
+	tagMap := map[string]bool{}
+	var tagModels []*models.Tag
+
+	for _, tag := range input.Tags {
+		tag = strings.TrimSpace(tag)
+
+		if tag == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tags must not be empty"})
+			return
+		}
+		if len(tag) > 50 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tag cannot exceed 50 characters"})
+			return
+		}
+		if tagMap[tag] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Duplicate tags are not allowed"})
+			return
+		}
+		tagMap[tag] = true
+
+		var tagModel models.Tag
+		if err := db.GetDB().FirstOrCreate(&tagModel, models.Tag{Tag: tag}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process tag: " + tag})
+			return
+		}
+		tagModels = append(tagModels, &tagModel)
+	}
+
+	// Step 5: Apply updates to todo fields
+	existing.Title = strings.TrimSpace(input.Title)
+	existing.Completed = input.Completed
+	existing.Category = input.Category
+	existing.Priority = input.Priority
+	existing.DueDate = input.DueDate
+
+	if input.Completed {
+		existing.CompletedAt = &now
+	} else {
+		existing.CompletedAt = nil
+	}
+
+	// Step 6: Save todo
 	if err := db.GetDB().Save(&existing).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not update todo"})
 		return
 	}
 
+	// Step 7: Update tags (many-to-many association)
+	if err := db.GetDB().Model(&existing).Association("Tags").Replace(tagModels); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not update tags"})
+		return
+	}
+
+	// Step 8: Return updated todo
 	c.JSON(http.StatusOK, existing)
 }
 
@@ -199,4 +305,32 @@ func DeleteAllTodos(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "All todos deleted"})
+}
+
+func GetSortedTodos(c *gin.Context) {
+	var todos []models.Todo
+
+	if err := db.GetDB().Preload("Tags").Find(&todos).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not fetch todos"})
+		return
+	}
+
+	priorityOrder := map[string]int{
+		"High":   3,
+		"Medium": 2,
+		"Low":    1,
+	}
+
+	sort.SliceStable(todos, func(i, j int) bool {
+		pi := priorityOrder[todos[i].Priority]
+		pj := priorityOrder[todos[j].Priority]
+
+		if pi != pj {
+			return pi > pj
+		}
+
+		return len(todos[i].Tags) > len(todos[j].Tags)
+	})
+
+	c.JSON(http.StatusOK, todos)
 }
