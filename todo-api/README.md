@@ -1,16 +1,16 @@
-# 📝 Todo API — RESTful Web Service in Go
+#  Todo API — RESTful Web Service in Go
 
-This is a full-stack RESTful Todo API built with **Go**, **Gin**, **GORM**, and **PostgreSQL**. It supports enhanced CRUD features including categories, priorities, tags, due dates, and priority-based sorting. Built using clean architecture and supports Docker and unit testing.
+This is a RESTful Todo API built with **Go**, **Gin**, **GORM**, and **PostgreSQL**. It supports enhanced CRUD features including categories, priorities, tags, due dates, and priority-based sorting. Built using clean architecture and supports Docker and unit testing.
 
 ---
 
-## ✅ Features
+##  Features
 
 - Create, Read, Update, Delete todos
 - Filter by:
-  - ✅ Category: `/todos/category/:category`
-  - ✅ Completion Status: `/todos/status/:status`
-  - ✅ Title Search: `/todos/search?q=term`
+  -  Category: `/todos/category/:category`
+  -  Completion Status: `/todos/status/:status`
+  -  Title Search: `/todos/search?q=term`
 - Tags support (many-to-many)
 - Priority: High > Medium > Low
 - Due dates (ISO 8601, UTC only)
